@@ -1,3 +1,4 @@
+import os
 from InstagramDownloader import Login
 
 username = os.environ['INSTA_USERNAME']
