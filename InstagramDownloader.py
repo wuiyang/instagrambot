@@ -314,7 +314,7 @@ class Uploader(object):
 
         self.counter = 0
         self.errors = 0
-		self.PROMOTE_MESSAGE = promote_message
+        self.PROMOTE_MESSAGE = promote_message
 
     def start(self):
         self.running = True
@@ -916,37 +916,37 @@ class InboxHandler(object):
                 self.handle_media_share(username, item)
 
 def Login(username, password, admins, promote_message):
-	cfg = Config(Path("config.json"))
-	sessionpath = Path("sessions/{u}.session".format(u = username))
+    cfg = Config(Path("config.json"))
+    sessionpath = Path("sessions/{u}.session".format(u = username))
 
-	mainlogin = InstagramLogin(username, password, Path("./sessions"))
-	api = mainlogin.api
+    mainlogin = InstagramLogin(username, password, Path("./sessions"))
+    api = mainlogin.api
 
-	if not api.isLoggedIn:
-		logging.error("Failed to login")
-		exit()
+    if not api.isLoggedIn:
+        logging.error("Failed to login")
+        exit()
 
-	uploaders = []
-	for x in range(0, 2):
-		uploaderpath = Path("sessions/" + username +"uploader_{0}.session".format(x))
-		queuepath = Path("uploader{0}_queue".format(x))
+    uploaders = []
+    for x in range(0, 2):
+        uploaderpath = Path("sessions/" + username +"uploader_{0}.session".format(x))
+        queuepath = Path("uploader{0}_queue".format(x))
 
-		if os.path.exists(uploaderpath):
-			uapi = pickle.load(open(uploaderpath, "rb"))
-			if not uapi.isLoggedIn:
-				uapi.login()
-		else:
-			uapi = InstagramAPI(username, password)
-			uapi.login()
-			pickle.dump(uapi, open(uploaderpath, "wb"))
-		test_upl = Uploader(uapi, cfg, x, uploaderpath, promote_message)
+        if os.path.exists(uploaderpath):
+            uapi = pickle.load(open(uploaderpath, "rb"))
+            if not uapi.isLoggedIn:
+                uapi.login()
+        else:
+            uapi = InstagramAPI(username, password)
+            uapi.login()
+            pickle.dump(uapi, open(uploaderpath, "wb"))
+        test_upl = Uploader(uapi, cfg, x, uploaderpath, promote_message)
 
-		if os.path.exists(queuepath):
-			test_upl.queue = json.load(open(queuepath))
+        if os.path.exists(queuepath):
+            test_upl.queue = json.load(open(queuepath))
 
-		test_upl.start()
-		uploaders.append(test_upl)
+        test_upl.start()
+        uploaders.append(test_upl)
 
 
-	inbox = InboxHandler(api, cfg, admins, uploaders, [])
-	inbox.run()
+    inbox = InboxHandler(api, cfg, admins, uploaders, [])
+    inbox.run()
