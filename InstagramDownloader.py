@@ -543,7 +543,7 @@ class InboxHandler(object):
         self.uploader_list = uploader
         self.uploader = self.uploader_list[0]
 
-        self.admins = ["instaagroup", "rxc0.i", "dome271"]
+        self.admins = ["justsome001"]
 
         self.first = True
 
@@ -914,8 +914,8 @@ class InboxHandler(object):
             elif item.item_type == "media_share":
                 self.handle_media_share(username, item)
 
-username = "USERNAME"
-password = "PASSWORD"
+username = os.environ['username']
+password = os.environ['password']
 
 cfg = Config(Path("config.json"))
 sessionpath = Path("sessions/{u}.session".format(u = username))
