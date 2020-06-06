@@ -1,1 +1,1 @@
-worker: python InstagramDownloader.py
+bot: python InstagramDownloader.py
