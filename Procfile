@@ -1,1 +1,1 @@
-bot: python InstagramDownloader.py
+bot: python LoadBot.py
