@@ -7,5 +7,5 @@ admins = [username, "wuiyang_tan"] # include admin here
 promote_message = "This bot is on test"
 
 print("startup")
-Login(username, password)
+Login(username, password, admins, promote_message)
 print("completed")
