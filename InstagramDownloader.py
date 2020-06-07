@@ -301,7 +301,7 @@ class Config(object):
         return int(delay * 10) // 10
 
 class Uploader(object):
-    def __init__(self, API, config, number, sessionpath):
+    def __init__(self, API, config, number, sessionpath, promote_message):
         self.api = API
         self.cfg = config
         self.number = number
@@ -314,6 +314,7 @@ class Uploader(object):
 
         self.counter = 0
         self.errors = 0
+        self.PROMOTE_MESSAGE = promote_message
 
     def start(self):
         self.running = True
@@ -392,7 +393,7 @@ class Uploader(object):
         
         user = self.cfg.get_user(item["userid"])
         if user["downloads"] == 0:
-            self.api.sendMessage(str(item["userid"]), "This bot was developed by @instaagroup.\n Check us out or modify the code on GitHub!")
+            self.api.sendMessage(str(item["userid"]), self.PROMOTE_MESSAGE)
             self.counter += 1
             logging.info("Welcomed {u}!".format(u=item["username"]))
         cfg.user_add_download(item["userid"], item["username"], item["download_from"])
@@ -416,7 +417,7 @@ class Uploader(object):
             self.api.send_direct_image(xd)
         user = self.cfg.get_user(item["userid"])
         if user["downloads"] == 0:
-            self.api.sendMessage(str(item["userid"]), "This bot was developed by @instaagroup.\n Check us out or modify the code on GitHub!")
+            self.api.sendMessage(str(item["userid"]), self.PROMOTE_MESSAGE)
             self.counter += 1
             logging.info("Welcomed {u}!".format(u=item["username"]))
         cfg.user_add_download(item["userid"], item["username"], item["download_from"])
@@ -536,14 +537,14 @@ class InboxItem(object):
 
 
 class InboxHandler(object):
-    def __init__(self, API, config, uploader, d_uploader):
+    def __init__(self, API, config, admins, uploader, d_uploader):
         self.api = API
         self.cfg = config
         self.count = 0
         self.uploader_list = uploader
         self.uploader = self.uploader_list[0]
 
-        self.admins = ["justsome001"]
+        self.admins = admins
 
         self.first = True
 
@@ -914,38 +915,38 @@ class InboxHandler(object):
             elif item.item_type == "media_share":
                 self.handle_media_share(username, item)
 
-def Login(username, password):
-	cfg = Config(Path("config.json"))
-	sessionpath = Path("sessions/{u}.session".format(u = username))
+def Login(username, password, admins, promote_message):
+    cfg = Config(Path("config.json"))
+    sessionpath = Path("sessions/{u}.session".format(u = username))
 
-	mainlogin = InstagramLogin(username, password, Path("./sessions"))
-	api = mainlogin.api
+    mainlogin = InstagramLogin(username, password, Path("./sessions"))
+    api = mainlogin.api
 
-	if not api.isLoggedIn:
-		logging.error("Failed to login")
-		exit()
+    if not api.isLoggedIn:
+        logging.error("Failed to login")
+        exit()
 
-	uploaders = []
-	for x in range(0, 2):
-		uploaderpath = Path("sessions/" + username +"uploader_{0}.session".format(x))
-		queuepath = Path("uploader{0}_queue".format(x))
+    uploaders = []
+    for x in range(0, 2):
+        uploaderpath = Path("sessions/" + username +"uploader_{0}.session".format(x))
+        queuepath = Path("uploader{0}_queue".format(x))
 
-		if os.path.exists(uploaderpath):
-			uapi = pickle.load(open(uploaderpath, "rb"))
-			if not uapi.isLoggedIn:
-				uapi.login()
-		else:
-			uapi = InstagramAPI(username, password)
-			uapi.login()
-			pickle.dump(uapi, open(uploaderpath, "wb"))
-		test_upl = Uploader(uapi, cfg, x, uploaderpath)
+        if os.path.exists(uploaderpath):
+            uapi = pickle.load(open(uploaderpath, "rb"))
+            if not uapi.isLoggedIn:
+                uapi.login()
+        else:
+            uapi = InstagramAPI(username, password)
+            uapi.login()
+            pickle.dump(uapi, open(uploaderpath, "wb"))
+        test_upl = Uploader(uapi, cfg, x, uploaderpath, promote_message)
 
-		if os.path.exists(queuepath):
-			test_upl.queue = json.load(open(queuepath))
+        if os.path.exists(queuepath):
+            test_upl.queue = json.load(open(queuepath))
 
-		test_upl.start()
-		uploaders.append(test_upl)
+        test_upl.start()
+        uploaders.append(test_upl)
 
 
-	inbox = InboxHandler(api, cfg, uploaders, [])
-	inbox.run()
+    inbox = InboxHandler(api, cfg, admins, uploaders, [])
+    inbox.run()
