@@ -9,6 +9,10 @@ import random
 import requests
 from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
 
+from Delay import Delay
+import Language
+from MongoStorage import Storage
+
 from Api import InstagramAPI
 from Api import InstagramLogin
 
@@ -30,280 +34,11 @@ logging.getLogger().addHandler(handler)
 
 import pickle
 
-class Config(object):
-    def __init__(self, filename):
-        self.filename = filename
-        self.lock = threading.Lock()
-        self.delaylist = {}
-
-        #self.save_worker = threading.Thread(target=self.save_worker_func)
-        #self.save_worker.start()
-        if not os.path.exists(filename):
-            self.config = {}
-            self.config["user_count"] = 0
-            self.config["users"] = []
-            self.config["stats"] = []
-            self.config["request_users"] = []
-            self.save_config()
-        else:
-            self.file = open(filename)
-            self.config = json.load(self.file)
-
-
-        self.language_file = Path("./language.json")
-        if not os.path.exists(self.language_file):
-            lng = {}
-            with open(self.language_file, "w") as language:
-                json.dump(lng, language, indent=4)
-
-
-
-
-    def has_key(self, json, key):
-        try:
-            item = json[key]
-            return True
-        except Exception:
-            return False
-
-    def find_index(self, json_object, key, name):
-        index = 0
-        for dict in json_object:
-            try:
-                if dict[key] == name:
-                    return index
-            except :
-                pass
-            index+=1
-        return -1
-
-    def save_config(self):
-        self.lock.acquire()
-        with open(self.filename, "w") as config_file:
-            json.dump(self.config, config_file)
-        self.lock.release()
-
-    def create_list_item(self, json_list, item):
-        self.lock.acquire()
-        json_list.append(item)
-        self.lock.release()
-
-    def clean(self):
-        list = []
-        new_users = []
-        for u in self.config["users"]:
-            if not u["userid"] in list:
-                new_users.append(u)
-                list.append(u["userid"])
-        self.config["users"] = new_users
-        return len(self.config["users"]) - len(new_users)
-
-# DAY STATS
-
-    def create_day(self, day):
-        new_day = {"day": str(day),
-                  "date": datetime.now().strftime("%Y-%m-%d"),
-                  "downloads": 0}
-        self.create_list_item(self.config["stats"], new_day)
-
-        return len(self.config["stats"]) - 1
-
-    def get_day_unsafe(self):
-        day = int((time.time() - time.time() % 86400) / 86400)
-        index = self.find_index(self.config["stats"], "day", str(day))
-        if index == -1:
-            index = self.create_day(day)
-
-        return self.config["stats"][index]
-
-    def get_day(self):
-        day = self.get_day_unsafe()
-        return json.loads(json.dumps(day))
-
-    def day_add_download(self):
-        day = self.get_day_unsafe()
-        self.lock.acquire()
-        day["downloads"] += 1
-        self.lock.release()
-
-# USER STATS
-
-    def create_user(self, userid, username):
-        i = self.find_index(self.config["users"], "userid", str(userid))
-        if i != -1:
-            self.config["users"][i]["username"] = username
-
-            return i
-
-
-        new_user = {"userid": str(userid),
-                    "username": username,
-                    "downloads": 0,
-                    "priority": 1,
-                    "latest_item_time": 0,
-                    "downloaded_from": []}
-
-        self.lock.acquire()
-        self.config["user_count"] += 1
-        self.lock.release()
-        self.create_list_item(self.config["users"], new_user)
-
-
-        return len(self.config["users"]) - 1
-
-    def get_user_unsafe(self, userid, create=False, username = ""):
-        index = self.find_index(self.config["users"], "userid", str(userid))
-        if index == -1:
-            if create and username != "":
-                self.create_user(userid, username)
-            else:
-                return None
-        return self.config["users"][index]
-
-    def get_user(self, userid):
-        user = self.get_user_unsafe(userid)
-        if user == None:
-            return None
-        return json.loads(json.dumps(user))
-
-    def user_add_download(self, userid, username, downloaded_from):
-        user = self.get_user_unsafe(userid, create=True, username=username)
-        if user == None:
-            return False
-        self.lock.acquire()
-        user["downloads"] += 1
-        self.lock.release()
-
-        index = self.find_index(user["downloaded_from"], "username", downloaded_from)
-        if index == -1:
-            self.create_list_item(user["downloaded_from"], {"username": downloaded_from,
-                                            "downloads": 1})
-        else:
-            self.lock.acquire()
-            user["downloaded_from"][index]["downloads"] += 1
-            self.lock.release()
-
-        return True
-
-    def user_set_itemtime(self, userid, username, item_time):
-        user = self.get_user_unsafe(userid, create=True, username=username)
-        self.lock.acquire()
-        user["latest_item_time"] = item_time
-        self.lock.release()
-
-    def upgrade_priority(self, username):
-        index = self.find_index(self.config["users"], "username", username)
-        if index == -1:
-            return "none"
-        user = self.config["users"][index]
-        user["priority"] += 1
-
-        return user["priority"]
-        
-
-    def downgrade_priority(self, username):
-        index = self.find_index(self.config["users"], "username", username)
-        if index == -1:
-            return "none"
-        user = self.config["users"][index]
-        user["priority"] -= 1
-
-        return user["priority"]
-# REQUESTED STATS
-
-    def create_requested(self, username):
-        new_requested = {"username": username,
-                        "requested": 0,
-                        "requestors": []}
-        self.create_list_item(self.config["request_users"], new_requested)
-  
-    def get_requested_unsafe(self, username):
-        index = self.find_index(self.config["request_users"], "username", username)
-        if index == -1:
-            self.create_requested(username)
-            index == len(self.config["request_users"]) - 1
-        return self.config["request_users"][index]
-
-    def get_requested(self, username):
-        requested = self.get_requested_unsafe(username)
-        if requested == None:
-            return None
-        return json.loads(json.dumps(requested))
-
-    def add_get_requestor(self, requestor_json, userid):
-        index = self.find_index(requestor_json["requestors"], "userid", userid)
-        if index == -1:
-            requestor = {"userid": userid,
-                         "requested": 0}
-            self.create_list_item(requestor_json["requestors"], requestor)
-            self.lock.acquire()
-            requestor_json["requested"] +=1
-            self.lock.release()
-            index == len(requestor_json["requestors"]) - 1
-        return requestor_json["requestors"][index]
-
-    def remove_requestor(self, username):
-        for thing in self.config["request_users"]:
-            if thing["username"] == username:
-                self.lock.acquire()
-                self.config["request_users"].remove(thing)
-                self.lock.release()
-
-    def requested_add_request(self, username, requested_by_userid):
-        requested = self.get_requested_unsafe(username)
-        requestor = self.add_get_requestor(requested, str(requested_by_userid))
-        self.lock.acquire()
-        requestor["requested"] += 1
-        self.lock.release()
-
-# Language
-    def get_text(self, text_key):
-        file = open(self.language_file)
-        lng = json.load(file)
-        if self.has_key(lng, text_key):
-            return lng[text_key]
-        else:
-            return "unknown, dm the dev or sth pls"
-
-    def add_text(self, text_key, text):
-        file = open(self.language_file)
-        lng = json.load(file)
-        with open(self.language_file, "w+") as language:
-            lng[text_key] = text
-            json.dump(lng, language, indent=4)
-
-#DELAY
-    def reset_delay(self):
-        self.delaylist = {}
-
-    def capture_delay(self, delay, priority):
-        if not self.has_key(self.delaylist, priority):
-            self.delaylist[priority] = []
-        
-        if len(self.delaylist[priority]) >= 20:
-            self.delaylist[priority].remove(self.delaylist[priority][0])
-
-        self.delaylist[priority].append(delay)
-
-    def get_delay(self, priority):
-        if not self.has_key(self.delaylist, priority):
-            self.delaylist[priority] = []
-        
-        delay = 0
-        i = 0
-        for d in self.delaylist[priority]:
-            delay += d
-            i += 1
-        if i > 0:
-            delay = delay / i
-        else:
-            delay = 0
-        return int(delay * 10) // 10
-
 class Uploader(object):
-    def __init__(self, API, config, number, sessionpath, promote_message):
+    def __init__(self, API, config, delay, number, sessionpath, promote_message):
         self.api = API
         self.cfg = config
+        self.delay = delay
         self.number = number
         self.sessionpath = sessionpath
         self.upload_worker = threading.Thread(target=self.upload_worker_func)
@@ -325,10 +60,9 @@ class Uploader(object):
 
 
     def extract_priority(self, json):
-        try:
+        if "priority" in json:
             return int(json["priority"])
-        except KeyError:
-            return 0
+        return 0
 
     def queue_contains(self, itemid):
         for item in self.queue:
@@ -339,11 +73,8 @@ class Uploader(object):
     def queue_contains_post(self, media_id, username):
         for item in self.queue:
             if item["username"] == username:
-                try:
-                    if item["media_id"] == media_id:
-                        return True
-                except Exception as e:
-                    pass
+                if "media_id" in item and item["media_id"] == media_id:
+                    return True
         return False
 
 
@@ -360,7 +91,6 @@ class Uploader(object):
     def send_media(self, url, itemid, mediatype, media_id, userid, username, download_from, sent, cut=False):
         user = self.cfg.get_user(userid)
         
-
         item = {"priority": user["priority"],
                 "url": url,
                 "item_id": itemid,
@@ -374,58 +104,41 @@ class Uploader(object):
 
         self.queue.append(item)
 
-    def upload_video(self, item, filename):
-        full_path = str(Path("./videos/{f}.mp4".format(f=filename)))
-        video = requests.get(item["url"])
-        open(full_path, "wb").write(video.content)
-        if item["cut"] == True:
+    # filetype: photo = .jpg, video = .mp4
+    def upload_file(self, item, filename, itemcode):
+        itemtype = "video" if itemcode == 2 else "photo"
+        filetype = "mp4" if itemcode == 2 else "jpg"
+        full_path = str(Path("./videos/{f}.{t}".format(f=filename, t=filetype)))
+        item_file = requests.get(item["url"])
+        open(full_path, "wb").write(item_file.content)
+
+        # if video length exceeds 60 seconds
+        if "cut" in item and item["cut"]:
             new_path = str(Path("./videos/{f}_cut.mp4".format(f=filename)))
             ffmpeg_extract_subclip(full_path, 0, 59, targetname=new_path)
             os.remove(full_path)
             full_path = new_path
-        xd = self.api.prepare_direct_video(item["userid"], full_path)
-        try:
-            self.api.send_direct_video(xd)
-        except Exception as e:
-            rnd = random.randint(1, 5) 
-            time.sleep(rnd)
-            self.api.send_direct_video(xd)
         
-        user = self.cfg.get_user(item["userid"])
-        if user["downloads"] == 0:
-            self.api.sendMessage(str(item["userid"]), self.PROMOTE_MESSAGE)
-            self.counter += 1
-            logging.info("Welcomed {u}!".format(u=item["username"]))
-        cfg.user_add_download(item["userid"], item["username"], item["download_from"])
-        cfg.day_add_download()
-        logging.info("{d} successfully downloaded a video from {u}".format(d=item["username"], u=item["download_from"]))
+        xd = self.api.prepare_direct(item["userid"], full_path, filetype)
 
-        logging.info("Timespan since sent video: {0}ms".format(str((time.time() * 1000 // 1) - item["sent"] // 1000)))
-        self.cfg.capture_delay(int(time.time() - item["sent"] // 1000000), item["priority"])
-        if os.path.exists(full_path):
-            os.remove(full_path)
-    def upload_photo(self, item, filename):
-        full_path = str(Path("./images/{f}.jpg".format(f=filename)))
-        video = requests.get(item["url"])
-        open(full_path, "wb").write(video.content)
-        xd = self.api.prepare_direct_image(item["userid"], full_path)
         try:
-            self.api.send_direct_image(xd)
-        except Exception as e:
+            self.api.send_direct(xd, filetype, itemcode)
+        except: # Exception as e:
             rnd = random.randint(1, 20) 
             time.sleep(rnd)
-            self.api.send_direct_image(xd)
+            self.api.send_direct(xd, filetype, itemcode)
+        
         user = self.cfg.get_user(item["userid"])
-        if user["downloads"] == 0:
+        if len(user["downloaded_from"]) == 0:
             self.api.sendMessage(str(item["userid"]), self.PROMOTE_MESSAGE)
             self.counter += 1
             logging.info("Welcomed {u}!".format(u=item["username"]))
-        cfg.user_add_download(item["userid"], item["username"], item["download_from"])
-        cfg.day_add_download()
-        logging.info("{d} successfully downloaded a photo from {u}".format(d=item["username"], u=item["download_from"]))
+        
+        self.cfg.user_add_download(item["userid"], item["username"], item["download_from"])
+        logging.info("{d} successfully downloaded a {t} from {u}".format(d=item["username"], t=itemtype, u=item["download_from"]))
 
-        logging.info("Timespan since sent video: {0}ms".format(str((time.time() * 1000 // 1) - item["sent"] // 1000)))
-        self.cfg.capture_delay(int(time.time() - item["sent"] // 1000000), item["priority"])
+        logging.info("Timespan since sent {t}: {s}ms".format(t=itemtype, s=str((time.time() * 1000 // 1) - item["sent"] // 1000)))
+        self.delay.capture_delay(int(time.time() - item["sent"] // 1000000), item["priority"])
         if os.path.exists(full_path):
             os.remove(full_path)
 
@@ -437,7 +150,7 @@ class Uploader(object):
 
             self.queue.sort(key=self.extract_priority, reverse=True)
 
-            item = None
+            item = {}
             filename = None
             full_path = ""
             try:
@@ -447,10 +160,7 @@ class Uploader(object):
                 rnd = random.randint(self.sleep[0], self.sleep[1]) 
                 time.sleep(rnd)
                 filename = str(int(round(time.time() * 10000)))
-                if item["media_type"] == 2:
-                    self.upload_video(item, filename)
-                elif item["media_type"] == 1:
-                    self.upload_photo(item, filename)
+                self.upload_file(item, filename, item["media_type"])
 
                 self.sleep = [10, 30]
                 self.queue.remove(item)
@@ -537,9 +247,10 @@ class InboxItem(object):
 
 
 class InboxHandler(object):
-    def __init__(self, API, config, admins, uploader, d_uploader):
+    def __init__(self, API, config, delay, admins, uploader, d_uploader):
         self.api = API
         self.cfg = config
+        self.delay = delay
         self.count = 0
         self.uploader_list = uploader
         self.uploader = self.uploader_list[0]
@@ -570,7 +281,6 @@ class InboxHandler(object):
                     logging.error("Handle Inbox crashed:  {0}".format(str(e)))
                     time.sleep(10)
             except:
-                self.cfg.save_config()
                 time.sleep(10)
         for u in self.uploader_list:
             u.running = False
@@ -585,26 +295,20 @@ class InboxHandler(object):
         return upl
 
     def is_post_queued(self, media_id, username):
-        total = 0
         for upl in self.uploader_list:
             if upl.queue_contains_post(media_id, username):
                 return True
         return False
 
-    def queue_count(self):
-        total = 0
-        for upl in self.uploader_list:
-            q = len(upl.queue)
-            print(str(q), end=" ")
-            total += q
-        print("Total {0}".format(total))
-        total = 0
-
-    def queue_total(self):
+    def queue_total(self, do_count=False):
         total = 0
         for upl in self.uploader_list:
             q = len(upl.queue)
             total += q
+            if do_count:
+                print(str(q), end=" ")
+        if do_count:
+            print("Total {0}".format(total))
         return total
             
 #item handler
@@ -629,7 +333,7 @@ class InboxHandler(object):
             duration = videojson["video_duration"]
 
         if duration >= 70:
-            self.api.sendMessage(str(item.author_id), self.cfg.get_text("video_to_long"))
+            self.api.sendMessage(str(item.author_id), Language.get_text("video_to_long"))
             return
 
         uploader = self.uploader
@@ -671,7 +375,7 @@ class InboxHandler(object):
                             upl.queue.remove(i)
                 self.api.sendMessage(str(item.author_id), "Removed {} queue items from that user!".format(total))
             elif text.startswith("!reset"):
-                self.cfg.reset_delay()
+                self.delay.reset_delay()
                 self.api.sendMessage(str(item.author_id), "Resetted!")
             elif text.startswith("!most"):
                 result = {}
@@ -687,12 +391,13 @@ class InboxHandler(object):
                     new.append(xd[i])
                 self.api.sendMessage(str(item.author_id), json.dumps(new, indent=4))
             if text == "!day":
-                downloads = self.cfg.get_day()["downloads"]
+                # todo: add to see custom day
+                downloads = self.cfg.get_day_download()
                 self.api.sendMessage(str(item.author_id), "{dl} downloads today!".format(dl = downloads))
             elif text == "!delay":
                 msg = ""
                 for i in range(0, 100):
-                    d = self.cfg.get_delay(i)
+                    d = self.delay.get_delay(i)
                     if d != 0:
                         msg += "Priority Lv {lvl} - {delay}s \r\n".format(lvl=i, delay=d)
                 self.api.sendMessage(str(item.author_id), msg)
@@ -706,7 +411,7 @@ class InboxHandler(object):
         self.cfg.user_set_itemtime(item.author_id, username, item.timestamp)
 
 
-        self.api.sendMessage(str(item.author_id), self.cfg.get_text("links_not_supported"))
+        self.api.sendMessage(str(item.author_id), Language.get_text("links_not_supported"))
         return
 
     def handle_image(self, username, item, same_queue=False, imagejson = None, bypass = False):
@@ -748,12 +453,12 @@ class InboxHandler(object):
                 username_requested = "".join([i for i in msg.split() if i.startswith("@")][0])[1:]
                 self.cfg.requested_add_request(username_requested, item.author_id)
             
-                self.api.sendMessage(str(item.author_id), self.cfg.get_text("requested"))
+                self.api.sendMessage(str(item.author_id), Language.get_text("requested"))
                 return
             elif "deleted" in msg:
-                self.api.sendMessage(str(item.author_id), self.cfg.get_text("deleted"))
+                self.api.sendMessage(str(item.author_id), Language.get_text("deleted"))
             else:
-                self.api.sendMessage(str(item.author_id), self.cfg.get_text("blocked"))
+                self.api.sendMessage(str(item.author_id), Language.get_text("blocked"))
         return
 
     def handle_story(self, username, item):
@@ -763,7 +468,7 @@ class InboxHandler(object):
             reason = item.item["story_share"]["reason"]
         except :
             title = "nope"
-            message = None
+            # message = None
 
         if title != "nope":
             if reason != 4:
@@ -774,7 +479,7 @@ class InboxHandler(object):
             self.cfg.user_set_itemtime(item.author_id, username, item.timestamp)
             username_requested = "".join([i for i in msg.split() if i.startswith("@")][0])[1:]
             self.cfg.requested_add_request(username_requested, item.author_id)
-            self.api.sendMessage(str(item.author_id), self.cfg.get_text("requested"))
+            self.api.sendMessage(str(item.author_id), Language.get_text("requested"))
             return
 
         if item.get_media_type() == 2:
@@ -805,7 +510,7 @@ class InboxHandler(object):
                 elif i["media_type"] == 1:
                     try:
                         self.handle_image(username, item, True, i, True)
-                    except Exception as e:
+                    except: # Exception as e:
                         print("skip")
                     
 
@@ -823,17 +528,16 @@ class InboxHandler(object):
     def do_delay_ad(self, username, item):
         user = self.cfg.get_user(item.author_id)
         priority = user["priority"]
-        delay = self.cfg.get_delay(priority)
+        delay = self.delay.get_delay(priority)
         print("user " + username + " " + str(delay))
         if delay > 300:
-            uprankdelay = self.cfg.get_delay(priority+1)
+            uprankdelay = self.delay.get_delay(priority+1)
             if uprankdelay > 150:
                 return
             self.api.sendMessage(str(item.author_id), "There are {q} people in the queue. Let an admin upgrade your priority".format(q=self.queue_total()))
 
     def handle_inbox(self):
         print("handle inbox")
-        self.cfg.save_config()
         num = 20
         if self.first == True:
             num = 50
@@ -878,7 +582,7 @@ class InboxHandler(object):
 
         if inbox["pending_requests_total"] == 0:
             time.sleep(1)
-            self.queue_count()
+            self.queue_total(True)
             x = 0
             for upl in self.uploader_list:
                 path = "uploader{0}_queue".format(str(x))
@@ -916,8 +620,9 @@ class InboxHandler(object):
                 self.handle_media_share(username, item)
 
 def Login(username, password, admins, promote_message):
-    cfg = Config(Path("config.json"))
-    sessionpath = Path("sessions/{u}.session".format(u = username))
+    cfg = Storage()
+    delay = Delay()
+    # sessionpath = Path("sessions/{u}.session".format(u = username))
 
     mainlogin = InstagramLogin(username, password, Path("./sessions"))
     api = mainlogin.api
@@ -939,7 +644,7 @@ def Login(username, password, admins, promote_message):
             uapi = InstagramAPI(username, password)
             uapi.login()
             pickle.dump(uapi, open(uploaderpath, "wb"))
-        test_upl = Uploader(uapi, cfg, x, uploaderpath, promote_message)
+        test_upl = Uploader(uapi, cfg, delay, x, uploaderpath, promote_message)
 
         if os.path.exists(queuepath):
             test_upl.queue = json.load(open(queuepath))
@@ -948,5 +653,5 @@ def Login(username, password, admins, promote_message):
         uploaders.append(test_upl)
 
 
-    inbox = InboxHandler(api, cfg, admins, uploaders, [])
+    inbox = InboxHandler(api, cfg, delay, admins, uploaders, [])
     inbox.run()

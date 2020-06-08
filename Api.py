@@ -396,9 +396,9 @@ class InstagramAPI:
         if response.status_code == 200:
             self.LastResponse = response
             try:
-            	self.LastJson = json.loads(response.text)
+                self.LastJson = json.loads(response.text)
             except:
-            	self.LastJson = {}
+                self.LastJson = {}
             return True
         else:
             print("Request return " + str(response.status_code) + " error!")
@@ -969,7 +969,9 @@ class InstagramAPI:
         ctime = str(currmil)
         return ctime
    
-    def prepare_direct_video(self, recipients, filepath):
+    def prepare_direct(self, recipients, filepath, itemcode):
+        itemtype = "video" if itemcode == 2 else "photo"
+        itemext = "mp4" if itemcode == 2 else "jpeg"
         baseheaders  = copy.deepcopy(self.s.headers)
         try:
             uploadId = self.UpId()
@@ -978,9 +980,9 @@ class InstagramAPI:
 
             hashCode = str(hash(filepath) % 1000000000)
             waterfallId = self.generateUUID(True)
-            videoEntityName = uploadId + "_0_" + hashCode
+            entityName = uploadId + "_0_" + hashCode
 
-            uri = "https://i.instagram.com/rupload_igvideo/" + videoEntityName
+            uri = "https://i.instagram.com/rupload_ig{t}/{s}".format(t=itemtype, s=entityName)
             retryContext = self.getRetryContext()
 
             uploadParams = json.dumps({'upload_media_height' : "0", # we could provide that
@@ -989,7 +991,7 @@ class InstagramAPI:
                                     'upload_media_duration_ms': "0",
                                     'upload_id': uploadId,
                                     'retry_context': retryContext,
-                                    'media_type': "2"})
+                                    'media_type': str(itemcode)})
 
 
             self.s.headers.update({'Accept-Language': 'en-US',
@@ -1013,14 +1015,14 @@ class InstagramAPI:
 
             # Video Upload
             videobytes = open(filepath, 'rb').read()
-            entitytype = 'video/mp4'
+            entitytype = '{t}/{e}'.format(t=itemtype, e=itemext)
 
             self.s.headers.update({'Accept-Language': 'en-US',
                                     'X-IG-Capabilities': '3Q4=',
                                     'X-IG-Connection-Type': 'WIFI',
                                     'User-Agent': self.USER_AGENT,
                                     'X-IG-App-ID': '567067343352427',
-                                    'X-Entity-Type': 'video/mp4',
+                                    'X-Entity-Type': entitytype,
                                     'Offset': '0',
                                     'X-Instagram-Rupload-Params': uploadParams,
                                     'X-Entity-Name': entitytype,
@@ -1052,47 +1054,46 @@ class InstagramAPI:
         
 
 
-    def send_direct_video(self, dVideo):
+    def send_direct(self, dVideo, itemcode):
+        itemtype = "video" if itemcode == 2 else "photo"
         baseheaders  = copy.deepcopy(self.s.headers)
-        try:
-            self.s.headers = dVideo.header
-            confuri="https://i.instagram.com/api/v1/direct_v2/threads/broadcast/configure_video/"
+        
+        self.s.headers = dVideo.header
+        confuri = "https://i.instagram.com/api/v1/direct_v2/threads/broadcast/configure_{t}/".format(t=itemtype)
 
-            content = ""
-            content += "action=send_item"
-            content += "&client_context=" + str(self.generateUUID(True))
-            content += "&_csrftoken=" + self.token
-            content += "&video_result="
-            content += "&_uuid=" + self.uuid
-            content += "&upload_id=" + dVideo.upload_id
-            content += "&recipient_users=%5B%5B" + dVideo.recipient + "%5D%5D"
+        content = ""
+        content += "action=send_item"
+        content += "&client_context=" + str(self.generateUUID(True))
+        content += "&_csrftoken=" + self.token
+        content += "&video_result="
+        content += "&_uuid=" + self.uuid
+        content += "&upload_id=" + dVideo.upload_id
+        content += "&recipient_users=%5B%5B" + dVideo.recipient + "%5D%5D"
 
-            self.s.headers.update({'Accept-Language': 'en-US',
-                               'X-IG-Capabilities': '3Q4=',
-                               'X-IG-Connection-Type': 'WIFI',
-                               'User-Agent': self.USER_AGENT,
-                               'X-IG-App-ID': '567067343352427',
-                               'retry_context': self.getRetryContext(),
-                               'Content-Type': 'application/x-www-form-urlencoded',
-                               'Host': 'i.instagram.com',
-                               'Content-Length': str(len(content)),
-                               'Expect': '100-continue'})
+        self.s.headers.update({'Accept-Language': 'en-US',
+                           'X-IG-Capabilities': '3Q4=',
+                           'X-IG-Connection-Type': 'WIFI',
+                           'User-Agent': self.USER_AGENT,
+                           'X-IG-App-ID': '567067343352427',
+                           'retry_context': self.getRetryContext(),
+                           'Content-Type': 'application/x-www-form-urlencoded',
+                           'Host': 'i.instagram.com',
+                           'Content-Length': str(len(content)),
+                           'Expect': '100-continue'})
 
-            response = self.s.post(confuri, data=content)
+        response = self.s.post(confuri, data=content)
+        if response.status_code != 200:
+            tried = 0
+            while response.status_code == 202 and not tried > 10:
+                print("Still Transcoding..")
+                time.sleep(5)
+                response = self.s.post(confuri, data=content)
+                tried+=1
             if response.status_code != 200:
-                tried = 0
-                while response.status_code == 202 and not tried > 10:
-                    print("Still Transcoding..")
-                    time.sleep(2)
-                    response = self.s.post(confuri, data=content)
-                    tried+=1
-                if response.status_code != 200:
-                    print("Request return " + str(response.status_code) + " error!")
-                    self.s.headers = baseheaders
-                    raise Exception('Unable to configure video' + response.text)
-                    return  
-        except :
-            raise Exception('Unable to configure video' + response.text)
+                print("Request return " + str(response.status_code) + " error!")
+                self.s.headers = baseheaders
+                raise Exception('Unable to configure {t}: {e}'.format(t=itemtype, e=response.text))
+                return
 
         self.s.headers = baseheaders
 
@@ -1135,133 +1136,6 @@ class InstagramAPI:
             self.LastJson = json.loads(r.content)
 
         return r.status_code == 200
-
-#image
-    def prepare_direct_image(self, recipients, filepath):
-        baseheaders  = copy.deepcopy(self.s.headers)
-        try:
-            uploadId = self.UpId()
-         
-            #Initial Request
-
-            hashCode = str(hash(filepath) % 1000000000)
-            waterfallId = self.generateUUID(True)
-            videoEntityName = uploadId + "_0_" + hashCode
-
-            uri = "https://i.instagram.com/rupload_igphoto/" + videoEntityName
-            retryContext = self.getRetryContext()
-
-            uploadParams = json.dumps({'upload_media_height' : "0", # we could provide that
-                                    'direct_v2': "1",
-                                    'upload_media_width': "0", # we could provide that 
-                                    'upload_media_duration_ms': "0",
-                                    'upload_id': uploadId,
-                                    'retry_context': retryContext,
-                                    'media_type': "1"})
-
-
-            self.s.headers.update({'Accept-Language': 'en-US',
-                                    'X-IG-Capabilities': '3Q4=',
-                                    'X-IG-Connection-Type': 'WIFI',
-                                    'User-Agent': self.USER_AGENT,
-                                    'X-IG-App-ID': '567067343352427',
-                                    'X_FB_VIDEO_WATERFALL_ID': waterfallId,
-                                    'X-Instagram-Rupload-Params': uploadParams,
-                                    'Host': 'i.instagram.com',
-                                    'Connection': 'keep-alive'
-                                    })
-
-            response = self.s.get(uri)
-            if response.status_code != 200:
-                print("Request return " + str(response.status_code) + " error!")
-                self.s.headers = baseheaders 
-                raise Exception('Handshake error')
-                return  
-
-            # Video Upload
-            videobytes = open(filepath, 'rb').read()
-            entitytype = 'image/jpeg'
-
-            self.s.headers.update({'Accept-Language': 'en-US',
-                                    'X-IG-Capabilities': '3Q4=',
-                                    'X-IG-Connection-Type': 'WIFI',
-                                    'User-Agent': self.USER_AGENT,
-                                    'X-IG-App-ID': '567067343352427',
-                                    'X-Entity-Type': 'image/jpeg',
-                                    'Offset': '0',
-                                    'X-Instagram-Rupload-Params': uploadParams,
-                                    'X-Entity-Name': entitytype,
-                                    'X-Entity-Length': str(len(videobytes)),
-                                    'X_FB_VIDEO_WATERFALL_ID': waterfallId,
-                                    'Host': 'i.instagram.com',
-                                    'Connection': 'keep-alive',
-                                    'Expect': '100-continue'
-                                    })
-
-
-            response = self.s.post(uri, data=videobytes)
-            if response.status_code != 200:
-                print("Request return " + str(response.status_code) + " error!")
-                self.s.headers = baseheaders 
-                raise Exception('Upload error')
-                return  
-
-
-            nice = dVideo(copy.deepcopy(self.s.headers), uploadId, recipients)
-            self.s.headers = baseheaders
-            return nice
-        except Exception as e:
-            try:
-                self.s.headers = baseheaders
-            except :
-                pass
-            raise e
-        
-
-
-    def send_direct_image(self, dVideo):
-        baseheaders  = copy.deepcopy(self.s.headers)
-        try:
-            self.s.headers = dVideo.header
-            confuri="https://i.instagram.com/api/v1/direct_v2/threads/broadcast/configure_photo/"
-
-            content = ""
-            content += "action=send_item"
-            content += "&client_context=" + str(self.generateUUID(True))
-            content += "&_csrftoken=" + self.token
-            content += "&video_result="
-            content += "&_uuid=" + self.uuid
-            content += "&upload_id=" + dVideo.upload_id
-            content += "&recipient_users=%5B%5B" + dVideo.recipient + "%5D%5D"
-
-            self.s.headers.update({'Accept-Language': 'en-US',
-                               'X-IG-Capabilities': '3Q4=',
-                               'X-IG-Connection-Type': 'WIFI',
-                               'User-Agent': self.USER_AGENT,
-                               'X-IG-App-ID': '567067343352427',
-                               'retry_context': self.getRetryContext(),
-                               'Content-Type': 'application/x-www-form-urlencoded',
-                               'Host': 'i.instagram.com',
-                               'Content-Length': str(len(content)),
-                               'Expect': '100-continue'})
-
-            response = self.s.post(confuri, data=content)
-            if response.status_code != 200:
-                tried = 0
-                while response.status_code == 202 and not tried > 10:
-                    print("Still Transcoding..")
-                    time.sleep(5)
-                    response = self.s.post(confuri, data=content)
-                    tried+=1
-                if response.status_code != 200:
-                    print("Request return " + str(response.status_code) + " error!")
-                    self.s.headers = baseheaders
-                    raise Exception('Unable to configure video' + response.text)
-                    return  
-        except :
-            raise Exception('Unable to configure video' + response.text)
-
-        self.s.headers = baseheaders
 
     def get_id_from_username(self, username):
         if self.searchUsername(username):
