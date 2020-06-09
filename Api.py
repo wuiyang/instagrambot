@@ -17,6 +17,7 @@ import string
 from datetime import datetime
 import calendar
 import os
+import random
 from dVideo import dVideo
 from requests_toolbelt import MultipartEncoder
 import logging
@@ -66,14 +67,14 @@ class InstagramAPI:
     # rank_token          # Rank token
     # IGDataPath          # Data storage path
 
-    def __init__(self, username, password, debug=False, IGDataPath=None):
+    def __init__(self, username):
         m = hashlib.md5()
-        m.update(username.encode('utf-8') + password.encode('utf-8'))
+        m.update(username.encode('utf-8') + str(random.randint(1, 100000000)).encode('utf-8'))
         self.device_id = self.generateDeviceId(m.hexdigest())
-        self.setUser(username, password)
+        self.uuid = self.generateUUID(True)
+        self.username = username
         self.isLoggedIn = False
         self.LastResponse = None
-        self.PATH = ""
         self.s = requests.Session()
 
     def sendMessage(self, target_user, msgText):
@@ -89,11 +90,6 @@ class InstagramAPI:
             'client_context': self.generateUUID(True)}
         return self.SendRequest(url, data)
 
-    def setUser(self, username, password):
-        self.username = username
-        self.password = password
-        self.uuid = self.generateUUID(True)
-
     def setProxy(self, proxy=None):
         """
         Set proxy for all requests::
@@ -107,7 +103,7 @@ class InstagramAPI:
                }
         self.s.proxies.update(proxies)
 
-    def login(self, force=False):
+    def login(self, password, force=False):
         if (not self.isLoggedIn or force):
             if (self.SendRequest('si/fetch_headers/?challenge_type=signup&guid=' + self.generateUUID(False), None, True)):
 
@@ -116,7 +112,7 @@ class InstagramAPI:
                         'username': self.username,
                         'guid': self.uuid,
                         'device_id': self.device_id,
-                        'password': self.password,
+                        'password': password,
                         'login_attempt_count': '0'}
 
                 if (self.SendRequest('accounts/login/', self.generateSignature(json.dumps(data)), True)):
@@ -158,7 +154,7 @@ class InstagramAPI:
         return self.SendRequest('qe/expose/', self.generateSignature(data))
 
     def logout(self):
-        logout = self.SendRequest('accounts/logout/')
+        self.SendRequest('accounts/logout/')
 
     def uploadPhoto(self, photo, caption=None, upload_id=None, is_sidecar=None):
         if upload_id is None:
@@ -545,11 +541,11 @@ class InstagramAPI:
                            'media_id': mediaId})
         return self.SendRequest('media/' + str(mediaId) + '/delete/', self.generateSignature(data))
 
-    def changePassword(self, newPassword):
+    def changePassword(self, oldPassword, newPassword):
         data = json.dumps({'_uuid': self.uuid,
                            '_uid': self.username_id,
                            '_csrftoken': self.token,
-                           'old_password': self.password,
+                           'old_password': oldPassword,
                            'new_password1': newPassword,
                            'new_password2': newPassword})
         return self.SendRequest('accounts/change_password/', self.generateSignature(data))
@@ -878,7 +874,7 @@ class InstagramAPI:
             try:
                 self.LastResponse = response
                 self.LastJson = json.loads(response.text)
-                print(self.LastJson)
+                # print(self.LastJson)
             except:
                 pass
             return False
@@ -942,7 +938,7 @@ class InstagramAPI:
                 next_id = temp["next_max_id"]
                 for item in temp["items"]:
                     liked_items.append(item)
-            except KeyError as e:
+            except KeyError:
                 break
         return liked_items
 
@@ -954,15 +950,6 @@ class InstagramAPI:
                         'num_reupload': 0,
                         'num_step_manual_retry':0})
 
-    def bytes_from_file(filename, chunksize=8192):
-        with open(filename, "rb") as f:
-            while True:
-                chunk = f.read(chunksize)
-                if chunk:
-                    for b in chunk:
-                        yield b
-                else:
-                    break
 
     def UpId(self):
         currmil = int(round(time.time() * 10000))
@@ -1011,7 +998,6 @@ class InstagramAPI:
                 self.s.headers = baseheaders 
                 time.sleep(20)
                 raise Exception('Handshake error')
-                return  
 
             # Video Upload
             videobytes = open(filepath, 'rb').read()
@@ -1039,7 +1025,6 @@ class InstagramAPI:
                 print("Request return " + str(response.status_code) + " error!")
                 self.s.headers = baseheaders 
                 raise Exception('Upload error')
-                return  
 
 
             nice = dVideo(copy.deepcopy(self.s.headers), uploadId, recipients)
@@ -1093,12 +1078,10 @@ class InstagramAPI:
                 print("Request return " + str(response.status_code) + " error!")
                 self.s.headers = baseheaders
                 raise Exception('Unable to configure {t}: {e}'.format(t=itemtype, e=response.text))
-                return
 
         self.s.headers = baseheaders
 
     def is_user_following(self, username):
-        return True
         try:
             url = "https://www.instagram.com/{}/?__a=1".format(username)
             response = self.s.get(url)
@@ -1141,25 +1124,3 @@ class InstagramAPI:
         if self.searchUsername(username):
             return self.LastJson["user"]["pk"]
         return None
-
-
-class InstagramLogin(object):
-    def __init__(self,username, password, folder = Path("./")):
-        self.username = username
-        self.password = password
-        self.path = Path(str(folder) + "/" + username + ".session")
-
-        if not os.path.exists(str(folder)):
-            os.mkdir(folder)
-
-        if not os.path.exists(self.path):
-            self.api = InstagramAPI(self.username, self.password)
-            self.api.login()
-            pickle.dump(self.api, open(self.path, "wb"))
-        else:
-            self.api = pickle.load(open(self.path, "rb"))
-            if not self.api.isLoggedIn:
-                print("logging in " + username)
-                self.api.login()
-                if self.api.isLoggedIn:
-                    pickle.dump(self.api, open(self.path, "wb"))

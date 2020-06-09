@@ -1,20 +1,17 @@
 import os
-from datetime import datetime
 import time
 import json
 import pickle
 import threading
 import random
+import re
 
 import requests
 from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
 
 from Delay import Delay
 import Language
-from MongoStorage import Storage
-
-from Api import InstagramAPI
-from Api import InstagramLogin
+from MongoStorage import Storage, APIStorage
 
 from pathlib import Path
 
@@ -35,12 +32,12 @@ logging.getLogger().addHandler(handler)
 import pickle
 
 class Uploader(object):
-    def __init__(self, API, config, delay, number, sessionpath, promote_message):
+    def __init__(self, API, config, delay, number, storage, promote_message):
         self.api = API
         self.cfg = config
         self.delay = delay
         self.number = number
-        self.sessionpath = sessionpath
+        self.storage = storage
         self.upload_worker = threading.Thread(target=self.upload_worker_func)
         self.running = False
         self.queue = []
@@ -79,13 +76,8 @@ class Uploader(object):
 
 
     def reload_api(self):
-        uploaderpath = self.sessionpath
-
-        if os.path.exists(uploaderpath):
-            self.api = pickle.load(open(uploaderpath, "rb"))
-            logging.info("Reloaded uploader {0}".format(self.sessionpath))
-        else:
-            logging.warning("Failed to reload uploader")
+        self.api = self.storage.load()
+        logging.info("Reloaded uploader #{}".format(self.storage.session_id))
 
 
     def send_media(self, url, itemid, mediatype, media_id, userid, username, download_from, sent, cut=False):
@@ -104,7 +96,7 @@ class Uploader(object):
 
         self.queue.append(item)
 
-    # filetype: photo = .jpg, video = .mp4
+    # filetype: photo (1) = .jpg, video (2) = .mp4
     def upload_file(self, item, filename, itemcode):
         itemtype = "video" if itemcode == 2 else "photo"
         filetype = "mp4" if itemcode == 2 else "jpg"
@@ -119,23 +111,23 @@ class Uploader(object):
             os.remove(full_path)
             full_path = new_path
         
-        xd = self.api.prepare_direct(item["userid"], full_path, filetype)
+        xd = self.api.prepare_direct(item["userid"], full_path, itemcode)
 
         try:
-            self.api.send_direct(xd, filetype, itemcode)
+            self.api.send_direct(xd, itemcode)
         except: # Exception as e:
             rnd = random.randint(1, 20) 
             time.sleep(rnd)
-            self.api.send_direct(xd, filetype, itemcode)
+            self.api.send_direct(xd, itemcode)
         
         user = self.cfg.get_user(item["userid"])
         if len(user["downloaded_from"]) == 0:
             self.api.sendMessage(str(item["userid"]), self.PROMOTE_MESSAGE)
             self.counter += 1
-            logging.info("Welcomed {u}!".format(u=item["username"]))
+            logging.info("Welcomed @{u}!".format(u=item["username"]))
         
         self.cfg.user_add_download(item["userid"], item["username"], item["download_from"])
-        logging.info("{d} successfully downloaded a {t} from {u}".format(d=item["username"], t=itemtype, u=item["download_from"]))
+        logging.info("{d} successfully downloaded a {t} from @{u}".format(d=item["username"], t=itemtype, u=item["download_from"]))
 
         logging.info("Timespan since sent {t}: {s}ms".format(t=itemtype, s=str((time.time() * 1000 // 1) - item["sent"] // 1000)))
         self.delay.capture_delay(int(time.time() - item["sent"] // 1000000), item["priority"])
@@ -167,7 +159,7 @@ class Uploader(object):
             except Exception as e:
                 if os.path.exists(full_path):
                     os.remove(full_path)
-                logging.error("Error with {u} {er}".format(er=str(e), u=item["username"]))
+                logging.error("Error with @{u} {er}".format(er=str(e), u=item["username"]))
                 if not "few minutes" in str(e):
                     self.queue.remove(item)
                 self.reload_api()
@@ -182,7 +174,9 @@ class InboxItem(object):
         self.users = json["users"]
         self.is_group = json["is_group"]
         self.item_type = self.item["item_type"]
-        self.author_id = self.item["user_id"]
+        self.author_id = 0
+        if len(self.users) > 0:
+            self.author_id = self.users[0]["pk"]
         self.timestamp = self.item["timestamp"]
 
 
@@ -275,6 +269,9 @@ class InboxHandler(object):
         while True:
             try:
                 try:
+                    # TODO: change to push notification based
+                    # currently will only retreive the latest message
+                    # ignoring the previous one if user send multiple within 15 second period
                     self.handle_inbox()
                     time.sleep(15)
                 except Exception as e:
@@ -343,9 +340,10 @@ class InboxHandler(object):
             self.uploader = uploader
             
         uploader.send_media(url, item.item["item_id"], 2, item.get_media()["pk"], str(item.author_id),  username, item.get_item_poster(), item.timestamp, cut = duration >= 60)
-        logging.info("Added {u} to queue".format(u=username))
+        logging.info("Added @{u} to queue".format(u=username))
 
     def handle_text(self, username, item, text = ""):
+        # change item.author_id to actual user
         if self.cfg.get_user(item.author_id)["latest_item_time"] == item.timestamp:
             return
         self.cfg.user_set_itemtime(item.author_id, username, item.timestamp)
@@ -360,11 +358,11 @@ class InboxHandler(object):
             if text.startswith("!upgrade"):
                 pusername = text.replace("!upgrade ", "")
                 now = self.cfg.upgrade_priority(pusername)
-                self.api.sendMessage(str(item.author_id), "{u} now has priority lvl {lv}".format(u=pusername, lv = now))
+                self.api.sendMessage(str(item.author_id), "@{u} now has priority lvl {lv}".format(u=pusername, lv = now))
             elif text.startswith("!downgrade"):
                 pusername = text.replace("!downgrade ", "")
                 now = self.cfg.downgrade_priority(pusername)
-                self.api.sendMessage(str(item.author_id), "{u} now has priority lvl {lv}".format(u=pusername, lv = now))
+                self.api.sendMessage(str(item.author_id), "@{u} now has priority lvl {lv}".format(u=pusername, lv = now))
             elif text.startswith("!remove"):
                 pusername = text.replace("!remove ", "")
                 total = 0
@@ -373,7 +371,7 @@ class InboxHandler(object):
                         if i["username"] == pusername:
                             total += 1
                             upl.queue.remove(i)
-                self.api.sendMessage(str(item.author_id), "Removed {} queue items from that user!".format(total))
+                self.api.sendMessage(str(item.author_id), "Removed {t} queue items from that user!".format(t=total))
             elif text.startswith("!reset"):
                 self.delay.reset_delay()
                 self.api.sendMessage(str(item.author_id), "Resetted!")
@@ -385,21 +383,54 @@ class InboxHandler(object):
                             result[q["username"]] = 1
                         else:
                             result[q["username"]] += 1
-                xd = sorted(result.items(), key=lambda x: x[1], reverse=True)
-                new = []
-                for i in range(0,10):
-                    new.append(xd[i])
-                self.api.sendMessage(str(item.author_id), json.dumps(new, indent=4))
-            if text == "!day":
+                xd = sorted(result.items(), key=lambda x: x[1], reverse=True)[:10]
+
+                output = "Top 10 users in download queue:"
+                index = 1
+
+                for xitem in xd:
+                    output += "\r\n{i}. @{u} ({n} downloads in queue)".format(i=index, u=xitem[0], n=xitem[1])
+                    index += 1
+
+                if index == 1:
+                    output = "Download queue is empty"
+
+                self.api.sendMessage(str(item.author_id), output)
+            elif text.startswith("!day"):
                 # todo: add to see custom day
                 downloads = self.cfg.get_day_download()
                 self.api.sendMessage(str(item.author_id), "{dl} downloads today!".format(dl = downloads))
+            elif text.startswith("!top"):
+                message = ""
+                query = text.replace("!top ", "").split(" ")
+                qlen = len(query)
+                amount = query[qlen] if qlen > 1 and query[qlen - 1].isdigit() else 5
+                username = query[1][1:] if len(query) >= 2 and query[1].startswith("@") else ""
+
+                if text == "!top" or query[0] == "":
+                    message = 'How to use !top:\r\n' \
+                              'To search for top N amount of post owner account with most downloads, do:\r\n' \
+                              '!top owner N\r\n\r\n' \
+                              'To search for top N amount of downloader for specifc post owner account, do:\r\n' \
+                              '!top owner @username N\r\n\r\n' \
+                              'To search for top N amount of downloaders with most downloads, do:\r\n' \
+                              '!top downloader N\r\n\r\n' \
+                              'To search for downloader\'s top N amount of downloads from post owner account, do:\r\n' \
+                              '!top downloader @username N\r\n\r\n' \
+                              'note: N is optional, default 5'
+                elif query[0] == "owner":
+                    message = self.cfg.get_post_owner_info(username, amount)
+                elif query[0] == "downloader":
+                    message = self.cfg.get_post_downloader_info(username, amount)
+                self.api.sendMessage(str(item.author_id), message)
             elif text == "!delay":
                 msg = ""
                 for i in range(0, 100):
                     d = self.delay.get_delay(i)
                     if d != 0:
                         msg += "Priority Lv {lvl} - {delay}s \r\n".format(lvl=i, delay=d)
+                if msg == "":
+                    msg = "Delay is empty (no delay)"
                 self.api.sendMessage(str(item.author_id), msg)
         return
 
@@ -441,7 +472,7 @@ class InboxHandler(object):
             self.uploader = uploader
 
         uploader.send_media(url, item.item["item_id"], 1, item.get_media()["pk"], str(item.author_id),  username, item.get_item_poster(), item.timestamp, cut = False)
-        logging.info("Added {u} to queue".format(u=username))
+        logging.info("Added @{u} to queue".format(u=username))
 
     def handle_placeholder(self, username, item):
         if self.cfg.get_user(item.author_id)["latest_item_time"] == item.timestamp:
@@ -522,7 +553,7 @@ class InboxHandler(object):
             self.api.sendMessage(str(item.author_id), "That profile picture is anonymous")
         url = item.item["profile"]["profile_pic_url"]
         self.uploader.send_media(url, item.item["item_id"], 1, str(item.author_id),  username, item.item["profile"]["username"], item.timestamp, cut = False)
-        logging.info("Added {u} to queue".format(u=username))
+        logging.info("Added @{u} to queue".format(u=username))
 
 
     def do_delay_ad(self, username, item):
@@ -539,7 +570,7 @@ class InboxHandler(object):
     def handle_inbox(self):
         print("handle inbox")
         num = 20
-        if self.first == True:
+        if self.first:
             num = 50
             self.first = False
         self.api.getv2Inbox(num)
@@ -555,12 +586,12 @@ class InboxHandler(object):
             try:
                 username = i["users"][0]["username"]
             except :
-                username = "@UNKNOWN@"
+                username = ""
 
             item = InboxItem(i)
             if item.is_group:
                 continue
-            self.cfg.create_user(item.author_id, username)
+            self.cfg.check_user(username, item.author_id)
 
             if item.item_type == "text":
                 self.handle_text(username, item)
@@ -598,11 +629,11 @@ class InboxHandler(object):
             try:
                 username = i["users"][0]["username"]
             except :
-                username = "@UNKNOWN@"
+                username = ""
 
             item = InboxItem(i)
             self.api.approve_pending_thread(i["thread_id"])
-            self.cfg.create_user(item.author_id, username)
+            self.cfg.check_user(username, item.author_id)
 
             if item.item_type == "text":
                 self.handle_text(username, item)
@@ -624,27 +655,20 @@ def Login(username, password, admins, promote_message):
     delay = Delay()
     # sessionpath = Path("sessions/{u}.session".format(u = username))
 
-    mainlogin = InstagramLogin(username, password, Path("./sessions"))
-    api = mainlogin.api
+    mainstorage = APIStorage(0)
+    api = mainstorage.load(username, password)
 
     if not api.isLoggedIn:
         logging.error("Failed to login")
         exit()
 
     uploaders = []
-    for x in range(0, 2):
-        uploaderpath = Path("sessions/" + username +"uploader_{0}.session".format(x))
+    for x in range(1, 3):
         queuepath = Path("uploader{0}_queue".format(x))
 
-        if os.path.exists(uploaderpath):
-            uapi = pickle.load(open(uploaderpath, "rb"))
-            if not uapi.isLoggedIn:
-                uapi.login()
-        else:
-            uapi = InstagramAPI(username, password)
-            uapi.login()
-            pickle.dump(uapi, open(uploaderpath, "wb"))
-        test_upl = Uploader(uapi, cfg, delay, x, uploaderpath, promote_message)
+        substorage = APIStorage(x)
+        uapi = substorage.load(username, password)
+        test_upl = Uploader(uapi, cfg, delay, x, substorage, promote_message)
 
         if os.path.exists(queuepath):
             test_upl.queue = json.load(open(queuepath))

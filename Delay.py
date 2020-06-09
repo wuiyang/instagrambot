@@ -23,5 +23,8 @@ class Delay(object):
         for d in self.delaylist[priority]:
             delay += d
             i += 1
+        
         if i > 0:
             delay = delay / i
+        
+        return int(delay * 10) // 10

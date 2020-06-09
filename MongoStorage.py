@@ -2,10 +2,24 @@ import os
 import datetime
 import Language
 import pymongo
+import requests
+
+from Api import InstagramAPI
 
 # choosing mongoDB as it stores more data compared with postgres
 # https://medium.com/@shivam270295/estimating-average-document-size-in-a-mongodb-collection-953b0788fac0
 # instagram redo https://stackoverflow.com/a/60744028
+
+# Single MongoDB instance
+
+class MongoDB(object):
+    def __init__(self):
+        client = pymongo.MongoClient(os.environ["MONGODB_URI"])
+        self.db = client.get_default_database()
+
+SingleMongoDB = MongoDB()
+
+# Storage class for Days, Users and Requests data and statistics
 
 class Storage(object):
     def __init__(self):
@@ -13,8 +27,7 @@ class Storage(object):
         self.init_db()
 
     def init_db(self):
-        client = pymongo.MongoClient("localhost:27017")#os.environ["MONGODB_URI"])
-        self.db = client.get_database("instabot")#.get_default_database()
+        self.db = SingleMongoDB.db
         self.users = self.db["users"]
         self.days = self.db["days"]
 
@@ -39,6 +52,9 @@ class Storage(object):
 
     # USER DATA
 
+    def format_userid(self, userid):
+        return userid if isinstance(userid, int) else int(userid) if userid.isdigit() else 0
+
     def create_user(self, userid, username):
         userData = {
             "userid": userid,
@@ -62,7 +78,6 @@ class Storage(object):
             user = self.users.find_one({ "userid": userid })
         
         if user is None:
-            username = username if username else "@UNKNOWN@"
             user = self.users.find_one({ "username": username })
 
         if user is None and create and username != "":
@@ -75,7 +90,7 @@ class Storage(object):
             if user["userid"] == "" and userid != "":
                 set_query["userid"] = userid
                 need_set = True
-            if user["username"] == "" and username != "":
+            if user["username"] == "" and username != "" and username != "@UNKNOWN@":
                 set_query["username"] = username
                 need_set = True
             
@@ -84,9 +99,11 @@ class Storage(object):
         return user
 
     def get_user(self, userid):
+        userid = self.format_userid(userid)
         return self.internal_get_user(userid)
 
     def user_add_download(self, userid, username, downloaded_from):
+        userid = self.format_userid(userid)
         user = self.internal_get_user(userid, create = True, username = username)
         if user == None:
             return False
@@ -115,10 +132,12 @@ class Storage(object):
         return True
 
     def check_user(self, username, userid = ""):
+        userid = self.format_userid(userid)
         return self.internal_get_user(userid, create = True, username = username)
 
     def user_set_itemtime(self, userid, username, item_time):
-        user = self.check_user(username, userid = userid)
+        userid = self.format_userid(userid)
+        user = self.check_user(username, userid)
         self.modify_user({ "_id": user["_id"] }, {"$set": { "latest_item_time": item_time } })
 
     def upgrade_priority(self, username):
@@ -165,9 +184,6 @@ class Storage(object):
         if has_username:
             aggregate_pipe.append({ "$group": group_pipe })
         
-        print(group_pipe)
-        print(aggregate_pipe)
-
         return self.users.aggregate(aggregate_pipe)
 
     def format_download_text(self, array, username_key, total_key):
@@ -175,7 +191,7 @@ class Storage(object):
         output = ""
         
         for item in array:
-            output += "\n{i}. @{u} ({c} downloads)".format(i = index, u = item[username_key], c = item[total_key])
+            output += "\r\n{i}. @{u} ({c} downloads)".format(i = index, u = item[username_key], c = item[total_key])
             index += 1
 
         return output
@@ -196,7 +212,6 @@ class Storage(object):
         if has_username:
             total = 0
             for requested_user in results:
-                print(requested_user)
                 total = requested_user["total"]
                 extra_info += self.format_download_text(requested_user["requestors"], "username", "downloads")
             output += "downloaders for post account @{u} (total of {t} downloads)".format(u = username, t = total)
@@ -251,3 +266,80 @@ class Storage(object):
         # self.lock.acquire()
         # requestor["requested"] += 1
         # self.lock.release()
+
+# Separated API storage class
+# TODO: implement encryption
+
+class APIStorage(object):
+    def __init__(self, session_id):
+        self.sessions = SingleMongoDB.db["sessions"]
+        self.session_id = session_id
+        self.username = ""
+        self.password = ""
+    
+    def save(self, instaAPI):
+        output_data = {
+            "session_id": self.session_id,
+            "device_id": instaAPI.device_id,
+            "uuid": instaAPI.uuid,
+            "isLoggedIn": instaAPI.isLoggedIn,
+            "username_id": instaAPI.username_id,
+            "rank_token": instaAPI.rank_token,
+            "token": instaAPI.token,
+            "cookies": self.extract_cookies(instaAPI.s.cookies)
+        }
+        self.sessions.update_one({ 'session_id': self.session_id },  { "$set": output_data }, upsert=True)
+
+    def load(self, username = "", password = ""):
+        self.username = username if self.username == "" else self.username
+        self.password = password if self.password == "" else self.password
+        instaAPI = InstagramAPI(self.username)
+
+        output_data = self.sessions.find_one({ 'session_id': self.session_id })
+        if output_data is None:
+            instaAPI.login(self.password)
+            self.save(instaAPI)
+        else:
+            instaAPI.device_id = output_data['device_id']
+            instaAPI.uuid = output_data["uuid"]
+            instaAPI.isLoggedIn = output_data["isLoggedIn"]
+            instaAPI.username_id = output_data["username_id"]
+            instaAPI.rank_token = output_data["rank_token"]
+            instaAPI.isLoggedIn = True
+            instaAPI.token = output_data["token"]
+            self.to_cookies(output_data['cookies'], instaAPI.s.cookies)
+            instaAPI.s.headers.update({ 'Cookie2': '$Version=1',
+                                        'Accept-Language': 'en-US',
+                                        'Accept-Encoding': 'gzip, deflate',
+                                        'Accept': '*/*',
+                                        'Content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                                        'Connection': 'close',
+                                        'User-Agent': instaAPI.USER_AGENT })
+        
+        return instaAPI
+
+    
+    def extract_cookies(self, cookies):
+        sim_cookies = []
+
+        for cookie in cookies:
+            sim_cookie = { 'name': cookie.name, 'value': cookie.value }
+
+            if cookie.expires is not None:
+                sim_cookie['expires'] = cookie.expires
+
+            if 'HttpOnly' in cookie._rest:
+                sim_cookie['HttpOnly'] = True
+
+            sim_cookies.append(sim_cookie)
+
+        return sim_cookies
+
+    def to_cookies(self, sim_cookies, cookies):
+        for sim_cookie in sim_cookies:
+            expires = sim_cookie['expires'] if 'expires' in sim_cookie and sim_cookie['expires'] else None
+            rest = { 'HttpOnly': None } if 'HttpOnly' in sim_cookie and sim_cookie['HttpOnly'] else None
+            discard = sim_cookie['name'] == "urlgen"
+            cookies.set(sim_cookie['name'], sim_cookie['value'], expires=expires, rest=rest, secure=True, domain='.instagram.com', discard=discard)
+
+
