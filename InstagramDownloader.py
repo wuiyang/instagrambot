@@ -409,19 +409,27 @@ class InboxHandler(object):
 
                 if text == "!top" or query[0] == "":
                     message = 'How to use !top:\r\n' \
-                              'To search for top N amount of post owner account with most downloads, do:\r\n' \
-                              '!top owner N\r\n\r\n' \
-                              'To search for top N amount of downloader for specifc post owner account, do:\r\n' \
-                              '!top owner @username N\r\n\r\n' \
-                              'To search for top N amount of downloaders with most downloads, do:\r\n' \
-                              '!top downloader N\r\n\r\n' \
-                              'To search for downloader\'s top N amount of downloads from post owner account, do:\r\n' \
-                              '!top downloader @username N\r\n\r\n' \
-                              'note: N is optional, default 5'
+                              '!top [type] @[username] [number]\r\n\r\n' \
+                              'type = owner / downloader / requestor / requested\r\n' \
+                              '@[username] = optional, search for specific user\'s detail (Instagram username, with @)\r\n' \
+                              '[number] = optional, default 5, filter out to show top [number] amount\r\n' \
+                              'owner / requested = post owner\r\n' \
+                              'downloader / requestor = person who DM the bot\r\n\r\n' \
+                              'Example:\r\n' \
+                              'To search for top 10 post owner account with most downloads, do:\r\n' \
+                              '!top owner 10\r\n\r\n' \
+                              'To search for top 10 amount of downloader for NASA, do:\r\n' \
+                              '!top owner @nasa 10\r\n\r\n' \
+                              'To search for top 5 most requested post owner account, do, do:\r\n' \
+                              '!top requested'
                 elif query[0] == "owner":
                     message = self.cfg.get_post_owner_info(username, amount)
                 elif query[0] == "downloader":
                     message = self.cfg.get_post_downloader_info(username, amount)
+                elif query[0] == "requestor":
+                    message = self.cfg.get_requestor_info(username, amount)
+                elif query[0] == "requested":
+                    message = self.cfg.get_requested_info(username, amount)
                 self.api.sendMessage(str(item.author_id), message)
             elif text == "!delay":
                 msg = ""
@@ -482,7 +490,7 @@ class InboxHandler(object):
             msg = item.get_media()["message"]
             if "@" in msg:
                 username_requested = "".join([i for i in msg.split() if i.startswith("@")][0])[1:]
-                self.cfg.requested_add_request(username_requested, item.author_id)
+                self.cfg.requested_add_request(username_requested, username)
             
                 self.api.sendMessage(str(item.author_id), Language.get_text("requested"))
                 return
@@ -509,7 +517,7 @@ class InboxHandler(object):
                 return
             self.cfg.user_set_itemtime(item.author_id, username, item.timestamp)
             username_requested = "".join([i for i in msg.split() if i.startswith("@")][0])[1:]
-            self.cfg.requested_add_request(username_requested, item.author_id)
+            self.cfg.requested_add_request(username_requested, username)
             self.api.sendMessage(str(item.author_id), Language.get_text("requested"))
             return
 

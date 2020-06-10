@@ -25,11 +25,40 @@ class Storage(object):
     def __init__(self):
         self.DEFAULT_PRIORITY = 1
         self.init_db()
+        self.init_collection_info()
 
     def init_db(self):
         self.db = SingleMongoDB.db
         self.users = self.db["users"]
         self.days = self.db["days"]
+        self.requests = self.db["requests"]
+
+        # define index for collections, ensure better searching and prevent duplication
+        self.users.create_index("userid")
+        self.days.create_index("date")
+        self.requests.create_index("username")
+
+    def init_collection_info(self):
+        self.collection_info_list = {
+            "users": {
+                "name": "users",
+                "array_name": "downloaded_from",
+                "action_text": "downloads",
+                "aggregate_user": "downloaders for post account",
+                "aggregate_all": "downloaded post accounts",
+                "query_user": "downloaded post account for downloader",
+                "query_all": "downloaders"
+            },
+            "requests": {
+                "name": "requests",
+                "array_name": "requestors",
+                "action_text": "requests",
+                "aggregate_user": "requested post accounts for requestor",
+                "aggregate_all": "requestors",
+                "query_user": "requestors for post account",
+                "query_all": "requested post account"
+            }
+        }
 
     # DAY STATS
 
@@ -150,29 +179,79 @@ class Storage(object):
         user = self.modify_user({ "_id": user["_id"] }, {"$inc": { "priority": -1 }})
         return user["priority"]
 
-    # USER STATS
+    # REQUEST DATA
 
-    def requested_query(self, username = "", top_amount = 5):
-        # pipeline for top 5 most requested account: unwind, group, sort and limit
-        # pipeline for top 5 most requestors for specific requested account: unwind, match, sort, limit and group
+    def create_request(self, username):
+        requestData = {
+            "username": username,
+            "requestors": []
+        }
+        request = self.requests.insert_one(requestData)
+        requestData["_id"] = request.inserted_id
+        return requestData
+    
+    def internal_get_request(self, username, create = False):
+        if username is None or username == "":
+            raise Exception("Username not found!")
+
+        request = self.requests.find_one({ "username": username })
+
+        if request is None and create:
+            return self.create_request(username)
+        
+        return request
+
+    def requested_add_request(self, username, requested_by_username):
+        self.internal_get_request(username, create = True)
+        
+        # first add in { userid, requested: 0 } if array does not have userid
+        self.requests.update_one({
+            "username": username,
+            "requestors.username": { "$ne": requested_by_username }
+        }, {
+            "$push": { 
+                "requestors": { "username": requested_by_username, "requests": 0 }
+            }
+        })
+
+        # then increase by 1
+        self.requests.update_one({
+            "username": username,
+            "requestors.username": requested_by_username
+        }, {
+            "$inc": { "requestors.$.requests": 1 }
+        })
+
+    # STATS FUNCTION
+
+    def aggregate_query(self, collection_name, array_name, count_name, username, top_amount):
+        # pipeline for top 5 most post/requested account: unwind, group, sort and limit
+        # pipeline for top 5 most downloaders/requestors for specific post/requested account: unwind, match, sort, limit and group
+        array_username = "{}.username".format(array_name)
+        full_count_name = "{}.{}".format(array_name, count_name)
+
+        ref_array_name = "$" + array_name
+        aref_rray_username = "$" + array_username
+        ref_full_count_name = "$" + full_count_name
+
         has_username = username != "" and username is not None
 
-        aggregate_pipe = [ { "$unwind": { "path": "$downloaded_from" } } ]
+        aggregate_pipe = [ { "$unwind": { "path": ref_array_name } } ]
         group_pipe = {
-            "_id": "$downloaded_from.username",
-            "total": { "$sum": "$downloaded_from.downloads" }
+            "_id": aref_rray_username,
+            "total": { "$sum": ref_full_count_name }
         }
         sort_pipe = {}
 
         if has_username:
-            group_pipe["requestors"] = {
+            group_pipe[array_name] = {
                 "$push": {
                     "username": "$username", 
-                    "downloads": "$downloaded_from.downloads"
+                    count_name: ref_full_count_name
                 }
             }
-            sort_pipe["downloaded_from.downloads"] = -1
-            aggregate_pipe.append({ "$match": { "downloaded_from.username": username } })
+            sort_pipe[full_count_name] = -1
+            aggregate_pipe.append({ "$match": { array_username: username } })
         else:
             sort_pipe["total"] = -1
             aggregate_pipe.append({ "$group": group_pipe })
@@ -181,17 +260,18 @@ class Storage(object):
 
         aggregate_pipe.append({ "$limit": top_amount })
 
+        # TODO: fix count, as previous limit pipeline removed rest
         if has_username:
             aggregate_pipe.append({ "$group": group_pipe })
         
-        return self.users.aggregate(aggregate_pipe)
+        return self.db[collection_name].aggregate(aggregate_pipe)
 
-    def format_download_text(self, array, username_key, total_key):
+    def format_text(self, array, username_key, total_key, action_text):
         index = 1
         output = ""
         
         for item in array:
-            output += "\r\n{i}. @{u} ({c} downloads)".format(i = index, u = item[username_key], c = item[total_key])
+            output += "\r\n{i}. @{u} ({c} {a})".format(i = index, u = item[username_key], c = item[total_key], a = action_text)
             index += 1
 
         return output
@@ -203,26 +283,33 @@ class Storage(object):
             return "No information found for account @{u}".format(u = username)
         return output + extra_info
 
-    def get_post_owner_info(self, username = "", top_amount = 5):
+    def get_aggregated_account_info(self, collection_info, username, top_amount):
         has_username = username != "" and username is not None
-        results = self.requested_query(username = username, top_amount = top_amount)
+        array_name = collection_info["array_name"]
+        action_text = collection_info["action_text"]
+
+        results = self.aggregate_query(collection_info["name"], array_name, action_text, username, top_amount)
         output = "Top {c} ".format(c = top_amount)
         extra_info = ""
 
         if has_username:
             total = 0
-            for requested_user in results:
-                total = requested_user["total"]
-                extra_info += self.format_download_text(requested_user["requestors"], "username", "downloads")
-            output += "downloaders for post account @{u} (total of {t} downloads)".format(u = username, t = total)
+            for relation_user in results:
+                total = relation_user["total"]
+                extra_info += self.format_text(relation_user[array_name], "username", action_text, action_text)
+            output += "{o} @{u} (total of {t} {a})".format(o = collection_info["aggregate_user"], u = username, t = total, a = action_text)
         else:
-            output += "downloaded post accounts"
-            extra_info += self.format_download_text(results, "_id", "total")
+            output += collection_info["aggregate_all"] 
+            extra_info += self.format_text(results, "_id", "total", action_text)
         
         return self.format_output(output, extra_info, username)
 
-    def get_post_downloader_info(self, username = "", top_amount = 5):
+    def get_query_account_info(self, collection_info, username, top_amount):
         has_username = username != "" and username is not None
+        array_name = collection_info["array_name"]
+        action_text = collection_info["action_text"]
+        ref_full_count_name = "${}.{}".format(array_name, action_text)
+
         aggregate_pipe = []
         output = "Top {c} ".format(c = top_amount)
         results = None
@@ -233,49 +320,57 @@ class Storage(object):
             aggregate_pipe.append( { "$match": { "username": username } } )
         
         aggregate_pipe += [
-            { "$addFields": { "total": { "$sum": "$downloaded_from.downloads" } } },
+            { "$addFields": { "total": { "$sum": ref_full_count_name } } },
             { "$sort": { "total": -1 } },
             { "$limit": top_amount }
         ]
         
         if has_username:
-            key = "downloads"
-            output += "downloaded post account for downloader @{u} ".format(u = username)
+            key = action_text
         else:
             key = "total"
-            output += "downloaders"
-            
-        results = self.users.aggregate(aggregate_pipe)
+            output += collection_info["query_all"]
+
+        results = self.db[collection_info["name"]].aggregate(aggregate_pipe)
         
         if has_username:
             total = 0
             for result in results:
                 total = result["total"]
-                results = sorted(result["downloaded_from"], key = lambda dl: dl["downloads"], reverse = True)[:top_amount]
-            output += "(total of {t} downloads)".format(t = total)
+                results = sorted(result[array_name], key = lambda dl: dl[action_text], reverse = True)[:top_amount]
+            output += "{o} @{u} (total of {t} downloads)".format(o = collection_info["query_user"], u = username, t = total)
         
-        extra_info = self.format_download_text(results, "username", key)
+        extra_info = self.format_text(results, "username", key, action_text)
 
         return self.format_output(output, extra_info, username)
+    
+    # USER STATS
 
-    # REQUEST DATA
-    def requested_add_request(self, username, requested_by_userid):
-        return None
-        # requested = self.get_requested_unsafe(username)
-        # requestor = self.add_get_requestor(requested, str(requested_by_userid))
-        # self.lock.acquire()
-        # requestor["requested"] += 1
-        # self.lock.release()
+    def get_post_owner_info(self, username = "", top_amount = 5):
+        return self.get_aggregated_account_info(self.collection_info_list["users"], username, top_amount)
+
+    def get_post_downloader_info(self, username = "", top_amount = 5):
+        return self.get_query_account_info(self.collection_info_list["users"], username, top_amount)
+    
+    # REQUEST STATS
+
+    def get_requestor_info(self, username = "", top_amount = 5):
+        return self.get_aggregated_account_info(self.collection_info_list["requests"], username, top_amount)
+
+    def get_requested_info(self, username = "", top_amount = 5):
+        return self.get_query_account_info(self.collection_info_list["requests"], username, top_amount)
 
 # Separated API storage class
 # TODO: implement encryption
 
 class APIStorage(object):
     def __init__(self, session_id):
-        self.sessions = SingleMongoDB.db["sessions"]
         self.session_id = session_id
         self.username = ""
         self.password = ""
+
+        self.sessions = SingleMongoDB.db["sessions"]
+        self.sessions.create_index("session_id")
     
     def save(self, instaAPI):
         output_data = {
