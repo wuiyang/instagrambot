@@ -375,27 +375,6 @@ class InboxHandler(object):
             elif text.startswith("!reset"):
                 self.delay.reset_delay()
                 self.api.sendMessage(str(item.author_id), "Resetted!")
-            elif text.startswith("!most"):
-                result = {}
-                for u in self.uploader_list:
-                    for q in u.queue:
-                        if q["username"] not in result.keys():
-                            result[q["username"]] = 1
-                        else:
-                            result[q["username"]] += 1
-                xd = sorted(result.items(), key=lambda x: x[1], reverse=True)[:10]
-
-                output = "Top 10 users in download queue:"
-                index = 1
-
-                for xitem in xd:
-                    output += "\r\n{i}. @{u} ({n} downloads in queue)".format(i=index, u=xitem[0], n=xitem[1])
-                    index += 1
-
-                if index == 1:
-                    output = "Download queue is empty"
-
-                self.api.sendMessage(str(item.author_id), output)
             elif text.startswith("!day"):
                 # todo: add to see custom day
                 downloads = self.cfg.get_day_download()
@@ -410,11 +389,12 @@ class InboxHandler(object):
                 if text == "!top" or query[0] == "":
                     message = 'How to use !top:\r\n' \
                               '!top [type] @[username] [number]\r\n\r\n' \
-                              'type = owner / downloader / requestor / requested\r\n' \
+                              'type = owner / downloader / requestor / requested / queue\r\n' \
                               '@[username] = optional, search for specific user\'s detail (Instagram username, with @)\r\n' \
                               '[number] = optional, default 5, filter out to show top [number] amount\r\n' \
                               'owner / requested = post owner\r\n' \
-                              'downloader / requestor = person who DM the bot\r\n\r\n' \
+                              'downloader / requestor = person who DM the bot\r\n' \
+                              'queue = current download queue list (@username not applicable under this search)\r\n\r\n' \
                               'Example:\r\n' \
                               'To search for top 10 post owner account with most downloads, do:\r\n' \
                               '!top owner 10\r\n\r\n' \
@@ -430,6 +410,25 @@ class InboxHandler(object):
                     message = self.cfg.get_requestor_info(username, amount)
                 elif query[0] == "requested":
                     message = self.cfg.get_requested_info(username, amount)
+                elif query[0] == "queue":
+                    result = {}
+                    for u in self.uploader_list:
+                        for q in u.queue:
+                            if q["username"] not in result.keys():
+                                result[q["username"]] = 1
+                            else:
+                                result[q["username"]] += 1
+                    xd = sorted(result.items(), key=lambda x: x[1], reverse=True)[:amount]
+
+                    message = "Top {} users in download queue:".format(amount)
+                    index = 1
+
+                    for xitem in xd:
+                        message += "\r\n{i}. @{u} ({n} downloads in queue)".format(i=index, u=xitem[0], n=xitem[1])
+                        index += 1
+
+                    if index == 1:
+                        message = "Download queue is empty"
                 self.api.sendMessage(str(item.author_id), message)
             elif text == "!delay":
                 msg = ""
