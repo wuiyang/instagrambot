@@ -14,7 +14,7 @@ from Api import InstagramAPI
 
 class MongoDB(object):
     def __init__(self):
-        client = pymongo.MongoClient(os.environ["MONGODB_URI"])
+        client = pymongo.MongoClient(os.environ["MONGODB_URI"].replace("retryWrites=true", "retryWrites=false"), retryWrites=False)
         self.db = client.get_default_database()
 
 SingleMongoDB = MongoDB()
